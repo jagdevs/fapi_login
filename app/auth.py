@@ -5,6 +5,7 @@ from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 from app import models, database
+from fastapi import Request
 
 # To get a string like this run: openssl rand -hex 32
 SECRET_KEY = "supersecretkey"
@@ -32,12 +33,21 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(db: Session = Depends(database.get_db), token: str = Depends(oauth2_scheme)):
+def get_current_user(request: Request, db: Session = Depends(database.get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Not authenticated",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    token = request.cookies.get("Authorization")
+    if not token:
+        raise credentials_exception
+    
+    # Remove 'Bearer' prefix from the token if it exists
+    if token.startswith("Bearer "):
+        token = token[len("Bearer "):]
+    
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -45,8 +55,10 @@ def get_current_user(db: Session = Depends(database.get_db), token: str = Depend
             raise credentials_exception
     except JWTError:
         raise credentials_exception
+
     user = db.query(models.User).filter(models.User.username == username).first()
     if user is None:
         raise credentials_exception
+    
     return user
 

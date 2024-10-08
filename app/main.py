@@ -1,3 +1,4 @@
+from fastapi.responses import RedirectResponse
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
@@ -16,17 +17,32 @@ templates = Jinja2Templates(directory="app/templates")
 # Pre-create database
 models.Base.metadata.create_all(bind=engine)
 
+@app.get("/login", response_class=HTMLResponse)
+async def get_login_page(request: Request, token: str = Depends(auth.oauth2_scheme)):
+    try:
+        current_user = await auth.get_current_user(db=Depends(get_db), token=token)
+        return RedirectResponse(url="/home")
+    except HTTPException:
+        return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
 @app.post("/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(
+    request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
+):
     user = auth.authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+        return templates.TemplateResponse(
+            "login.html", {"request": request, "error": "Invalid username or password"}
         )
-    access_token_expires = timedelta(minutes=60)  # 1 hour session duration
+    
+    access_token_expires = timedelta(minutes=60)
     access_token = auth.create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
-    return {"access_token": access_token, "token_type": "bearer"}
+    
+    # Create a response that redirects to /home and set the token in a cookie
+    response = RedirectResponse(url="/home", status_code=status.HTTP_302_FOUND)
+    response.set_cookie(key="Authorization", value=f"Bearer {access_token}", httponly=True)
+    return response
+
 
 @app.get("/", response_class=HTMLResponse)
 async def get_login_page(request: Request):
@@ -36,8 +52,12 @@ async def get_login_page(request: Request):
 async def read_users_me(current_user: models.User = Depends(auth.get_current_user)):
     return {"username": current_user.username}
 
-@app.post("/logout")
-async def logout():
-    # Frontend should remove token, no server-side session management required
-    return {"msg": "Successfully logged out"}
+@app.get("/home", response_class=HTMLResponse)
+async def home(request: Request, current_user: models.User = Depends(auth.get_current_user)):
+    return templates.TemplateResponse("home.html", {"request": request, "username": current_user.username})
 
+@app.post("/logout")
+async def logout(request: Request):
+    response = RedirectResponse(url="/login")
+    response.delete_cookie("Authorization")
+    return response
